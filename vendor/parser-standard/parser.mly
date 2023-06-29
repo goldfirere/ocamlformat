@@ -149,10 +149,10 @@ let neg_string f =
 
 let mkuminus ~oploc name arg =
   match name, arg.pexp_desc with
-  | "-", Pexp_constant(Pconst_integer (n,m)) ->
-      Pexp_constant(Pconst_integer(neg_string n,m))
-  | ("-" | "-."), Pexp_constant(Pconst_float (f, m)) ->
-      Pexp_constant(Pconst_float(neg_string f, m))
+  | "-", Pexp_constant(Pconst_integer (ub,n,m)) ->
+      Pexp_constant(Pconst_integer(ub,neg_string n,m))
+  | ("-" | "-."), Pexp_constant(Pconst_float (ub,f, m)) ->
+      Pexp_constant(Pconst_float(ub,neg_string f, m))
   | _ ->
       Pexp_apply(mkoperator ~loc:oploc ("~" ^ name), [Nolabel, arg])
 
@@ -762,6 +762,69 @@ let check_layout loc id =
   let loc = make_loc loc in
   Attr.mk ~loc (mkloc id loc) (PStr [])
 
+(* Unboxed literals *)
+
+module Constant : sig
+  type t = private
+    | Value of constant
+    | Unboxed of Jane_syntax.Unboxed_constants.t
+
+  type loc := Lexing.position * Lexing.position
+
+  val value : Parsetree.constant -> t
+  val unboxed : loc:loc -> Jane_syntax.Unboxed_constants.t -> t
+  val to_expression : loc:loc -> t -> expression
+  val to_pattern : loc:loc -> t -> pattern
+  val assert_is_value : loc:loc -> where:string -> t -> constant
+end = struct
+  type t =
+    | Value of constant
+    | Unboxed of Jane_syntax.Unboxed_constants.t
+
+  let value x = Value x
+
+  let unboxed ~loc x = Unboxed x
+
+  let to_expression ~loc : t -> expression = function
+    | Value const_value ->
+        mkexp ~loc (Pexp_constant const_value)
+    | Unboxed const_unboxed ->
+
+        mkexp_jane_syntax ~loc
+          (Jane_syntax.Unboxed_constants.expr_of
+             ~loc:(make_loc loc)
+             const_unboxed)
+
+  let to_pattern ~loc : t -> pattern = function
+    | Value const_value ->
+        mkpat ~loc (Ppat_constant const_value)
+    | Unboxed const_unboxed ->
+        mkpat_jane_syntax ~loc
+          (Jane_syntax.Unboxed_constants.pat_of
+             ~loc:(make_loc loc)
+             const_unboxed)
+
+  let assert_is_value ~loc ~where : t -> Parsetree.constant = function
+    | Value x -> x
+    | Unboxed _ ->
+        not_expecting loc (Printf.sprintf "unboxed literal %s" where)
+end
+
+type sign = Positive | Negative
+
+let with_sign sign num =
+  match sign with
+  | Positive -> num
+  | Negative -> "-" ^ num
+
+let unboxed_int sloc sign (n, m) =
+  match m with
+  | Some _ -> Pconst_integer (true, with_sign sign n, m)
+  | None ->
+    not_expecting sloc
+      "line number directive (an unboxed literal would have a suffix)"
+
+let unboxed_float sign (f, m) = Pconst_float (true, with_sign sign f, m)
 %}
 
 /* Tokens */
@@ -808,7 +871,8 @@ let check_layout loc id =
 %token EXCLAVE                "exclave_"
 %token EXTERNAL               "external"
 %token FALSE                  "false"
-%token <string * char option> FLOAT "42.0" (* just an example *)
+%token <string * char option> FLOAT      "42.0"  (* just an example *)
+%token <string * char option> HASH_FLOAT "#42.0" (* just an example *)
 %token FOR                    "for"
 %token FUN                    "fun"
 %token FUNCTION               "function"
@@ -830,7 +894,8 @@ let check_layout loc id =
 %token <string> ANDOP         "and*" (* just an example *)
 %token INHERIT                "inherit"
 %token INITIALIZER            "initializer"
-%token <string * char option> INT "42"  (* just an example *)
+%token <string * char option> INT      "42"   (* just an example *)
+%token <string * char option> HASH_INT "#42l" (* just an example *)
 %token <string> LABEL         "~label:" (* just an example *)
 %token LAZY                   "lazy"
 %token LBRACE                 "{"
@@ -973,7 +1038,7 @@ The precedences must be listed from low to high.
 %nonassoc below_DOT
 %nonassoc DOT DOTOP
 /* Finally, the first tokens of simple_expr are above everything else. */
-%nonassoc BACKQUOTE BANG BEGIN CHAR FALSE FLOAT INT OBJECT
+%nonassoc BACKQUOTE BANG BEGIN CHAR FALSE FLOAT HASH_FLOAT INT HASH_INT OBJECT
           LBRACE LBRACELESS LBRACKET LBRACKETBAR LBRACKETCOLON LIDENT LPAREN
           NEW PREFIXOP STRING TRUE UIDENT UNDERSCORE
           LBRACKETPERCENT QUOTED_STRING_EXPR
@@ -3898,17 +3963,23 @@ meth_list:
 /* Constants */
 
 constant:
-  | INT          { let (n, m) = $1 in Pconst_integer (n, m) }
+  | INT          { let (n, m) = $1 in Pconst_integer (false, n, m) }
   | CHAR         { Pconst_char $1 }
   | STRING       { let (s, strloc, d) = $1 in Pconst_string (s, strloc, d) }
-  | FLOAT        { let (f, m) = $1 in Pconst_float (f, m) }
+  | FLOAT        { let (f, m) = $1 in Pconst_float (false, f, m) }
+  | HASH_INT          { unboxed_int $sloc Positive $1 }
+  | HASH_FLOAT        { unboxed_float Positive $1 }
 ;
 signed_constant:
     constant     { $1 }
-  | MINUS INT    { let (n, m) = $2 in Pconst_integer("-" ^ n, m) }
-  | MINUS FLOAT  { let (f, m) = $2 in Pconst_float("-" ^ f, m) }
-  | PLUS INT     { let (n, m) = $2 in Pconst_integer (n, m) }
-  | PLUS FLOAT   { let (f, m) = $2 in Pconst_float(f, m) }
+  | MINUS INT    { let (n, m) = $2 in Pconst_integer(false, "-" ^ n, m) }
+  | MINUS FLOAT  { let (f, m) = $2 in Pconst_float(false, "-" ^ f, m) }
+  | MINUS HASH_INT    { unboxed_int $sloc Negative $2 }
+  | MINUS HASH_FLOAT  { unboxed_float Negative $2 }
+  | PLUS INT     { let (n, m) = $2 in Pconst_integer (false, n, m) }
+  | PLUS FLOAT   { let (f, m) = $2 in Pconst_float(false, f, m) }
+  | PLUS HASH_INT     { unboxed_int $sloc Positive $2 }
+  | PLUS HASH_FLOAT   { unboxed_float Negative $2 }
 ;
 
 /* Identifiers and long identifiers */
