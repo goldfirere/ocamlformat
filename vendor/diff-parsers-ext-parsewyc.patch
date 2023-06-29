@@ -247,8 +247,9 @@
    let pattern    : _ -> _ -> _ -> (pattern,    pattern_desc)    t -> _ = to_ast
  end
  
- let ppat_iarray loc elts =
-   (Extensions.Immutable_arrays.pat_of
+@@@@
+   (Jane_syntax.Immutable_arrays.pat_of
+      ~attrs:[]
       ~loc:(make_loc loc)
       (Iapat_immutable_array elts)).ppat_desc
  
@@ -762,7 +763,7 @@
  
  comprehension_iterator:
    | EQUAL expr direction_flag expr
-       { Extensions.Comprehensions.Range { start = $2 ; stop = $4 ; direction = $3 } }
+       { Jane_syntax.Comprehensions.Range { start = $2 ; stop = $4 ; direction = $3 } }
 @@@@
  ;
  

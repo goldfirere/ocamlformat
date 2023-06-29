@@ -10,7 +10,7 @@
 (**************************************************************************)
 
 open Parser_extended
-module Extensions = Extensions
+module Jane_syntax = Jane_syntax
 
 include module type of Parsetree
 

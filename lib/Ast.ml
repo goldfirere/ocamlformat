@@ -141,8 +141,8 @@ module Exp = struct
     | _ -> List.exists pexp_attributes ~f:(Fn.non Attr.is_doc)
 
   let maybe_extension exp f_extension f_normal =
-    match Extensions.Expression.of_ast exp with
-    | Some eexp -> f_extension eexp
+    match Jane_syntax.Expression.of_ast exp with
+    | Some (eexp, attrs) -> f_extension attrs eexp
     | None -> f_normal ()
 
   let rec is_trivial exp =
@@ -161,13 +161,13 @@ module Exp = struct
     | Pexp_array [x] | Pexp_list [x] -> is_trivial x
     | _ -> false
 
-  and is_trivial_extension : Extensions.Expression.t -> _ = function
-    | Eexp_immutable_array (Iaexp_immutable_array []) -> true
-    | Eexp_immutable_array (Iaexp_immutable_array [x]) -> is_trivial x
-    | Eexp_immutable_array (Iaexp_immutable_array _)
-     |Eexp_comprehension
-        (Cexp_list_comprehension _ | Cexp_array_comprehension _) ->
-        false
+  and is_trivial_extension _attrs : Jane_syntax.Expression.t -> _ = function
+    | Jexp_immutable_array (Iaexp_immutable_array [])
+    | Jexp_unboxed_constant _ -> true
+    | Jexp_immutable_array (Iaexp_immutable_array [x]) -> is_trivial x
+    | Jexp_immutable_array (Iaexp_immutable_array _)
+    | Jexp_comprehension
+        (Cexp_list_comprehension _ | Cexp_array_comprehension _) -> false
 
   let rec exposed_left e =
     match e.pexp_desc with
@@ -214,16 +214,17 @@ module Pat = struct
     | _ -> false
 
   let maybe_extension pat f_extension f_normal =
-    match Extensions.Pattern.of_ast pat with
-    | Some epat -> f_extension epat
+    match Jane_syntax.Pattern.of_ast pat with
+    | Some (epat, attrs) -> f_extension attrs epat
     | None -> f_normal ()
 
   let has_trailing_attributes_extension _ppat_attributes :
-      Extensions.Pattern.t -> _ = function
-    | Epat_immutable_array (Iapat_immutable_array _) -> false
+      Jane_syntax.Pattern.t -> _ = function
+    | Jpat_immutable_array (Iapat_immutable_array _)
+    | Jpat_unboxed_constant _ -> false
 
   let has_trailing_attributes ({ppat_desc; ppat_attributes; _} as pat) =
-    maybe_extension pat (has_trailing_attributes_extension ppat_attributes)
+    maybe_extension pat has_trailing_attributes_extension
     @@ fun () ->
     match ppat_desc with
     | Ppat_construct (_, None)
@@ -1215,7 +1216,7 @@ end = struct
     type t = Expression of expression | Pattern of pattern
   end
 
-  let check_comprehension Extensions.Comprehensions.{body; clauses}
+  let check_comprehension Jane_syntax.Comprehensions.{body; clauses}
       (tgt : Comprehension_child.t) =
     let expression_is_child =
       match tgt with
@@ -1275,9 +1276,10 @@ end = struct
     | Pat ctx -> (
         let f pI = pI == pat in
         (* Inlined because we're closed over things *)
-        let check_extension : Extensions.Pattern.t -> _ = function
-          | Epat_immutable_array (Iapat_immutable_array p1N) ->
+        let check_extension _attrs : Jane_syntax.Pattern.t -> _ = function
+          | Jpat_immutable_array (Iapat_immutable_array p1N) ->
               assert (List.exists p1N ~f)
+          | Jpat_unboxed_constant _ -> assert false
         in
         Pat.maybe_extension ctx check_extension
         @@ fun () ->
@@ -1303,12 +1305,13 @@ end = struct
             assert false )
     | Exp ctx -> (
         (* Inlined because it's simpler *)
-        let check_extension : Extensions.Expression.t -> _ = function
-          | Eexp_comprehension
+        let check_extension _attrs : Jane_syntax.Expression.t -> _ = function
+          | Jexp_comprehension
               ( Cexp_list_comprehension comp
               | Cexp_array_comprehension (_, comp) ) ->
               assert (check_comprehension comp (Pattern pat))
-          | Eexp_immutable_array (Iaexp_immutable_array _) -> assert false
+          | Jexp_immutable_array (Iaexp_immutable_array _)
+          | Jexp_unboxed_constant _ -> assert false
         in
         Exp.maybe_extension ctx check_extension
         @@ fun () ->
@@ -1420,13 +1423,14 @@ end = struct
         let f eI = eI == exp in
         let snd_f (_, eI) = eI == exp in
         (* Inlined because we're closed over things *)
-        let check_extension : Extensions.Expression.t -> _ = function
-          | Eexp_comprehension
+        let check_extension _attrs : Jane_syntax.Expression.t -> _ = function
+          | Jexp_comprehension
               ( Cexp_list_comprehension comp
               | Cexp_array_comprehension (_, comp) ) ->
               assert (check_comprehension comp (Expression exp))
-          | Eexp_immutable_array (Iaexp_immutable_array e1N) ->
+          | Jexp_immutable_array (Iaexp_immutable_array e1N) ->
               assert (List.exists e1N ~f)
+          | Jexp_unboxed_constant _ -> assert false
         in
         Exp.maybe_extension ctx check_extension
         @@ fun () ->
@@ -1597,22 +1601,25 @@ end = struct
     | Pexp_extension (_, (PStr [] | PTyp _)) -> true
     | _ -> false
 
-  and is_simple_extension c width xexp : Extensions.Expression.t -> bool =
+  and is_simple_extension c width xexp _attrs :
+    Jane_syntax.Expression.t -> bool =
     function
-    | Eexp_immutable_array (Iaexp_immutable_array e1N) ->
+    | Jexp_immutable_array (Iaexp_immutable_array e1N) ->
         List.for_all e1N ~f:Exp.is_trivial && fit_margin c (width xexp)
-    | Eexp_comprehension
+    | Jexp_comprehension
         (Cexp_list_comprehension _ | Cexp_array_comprehension _) ->
         false
+    | Jexp_unboxed_constant _ -> true
 
-  let prec_ctx_extension : Extensions.Expression.t -> _ =
+  let prec_ctx_extension _attrs : Jane_syntax.Expression.t -> _ =
     let open Prec in
     let open Assoc in
     function
-    | Eexp_comprehension
+    | Jexp_comprehension
         (Cexp_list_comprehension _ | Cexp_array_comprehension _)
-     |Eexp_immutable_array (Iaexp_immutable_array _) ->
+    | Jexp_immutable_array (Iaexp_immutable_array _) ->
         Some (Semi, Non)
+    | Jexp_unboxed_constant _ -> None
 
   (** [prec_ctx {ctx; ast}] is the precedence of the context of [ast] within
       [ctx], where [ast] is an immediate sub-term (modulo syntactic sugar) of
@@ -1954,8 +1961,11 @@ end = struct
     | Mod {pmod_desc= Pmod_gen_apply _; _}, Pmod_functor _ -> true
     | _ -> false
 
-  let parenze_pat_extension (epat : Extensions.Pattern.t) =
-    match epat with Epat_immutable_array (Iapat_immutable_array _) -> false
+  let parenze_pat_extension _attrs (epat : Jane_syntax.Pattern.t) =
+    match epat with
+      | Jpat_immutable_array (Iapat_immutable_array _)
+      | Jpat_unboxed_constant _
+        -> false
 
   (** [parenze_pat {ctx; ast}] holds when pattern [ast] should be
       parenthesized in context [ctx]. *)
@@ -2068,12 +2078,13 @@ end = struct
           (not (parenze_exp (sub_exp ~ctx:(Exp exp) subexp)))
           && exposed_right_exp cls subexp
         in
-        let exposed_extension eexp =
+        let exposed_extension _attrs eexp =
           (* Inlined because we're closed over [memo] *)
           match eexp with
-          | Extensions.Expression.Eexp_comprehension
+          | Jane_syntax.Expression.Jexp_comprehension
               (Cexp_list_comprehension _ | Cexp_array_comprehension _)
-           |Eexp_immutable_array (Iaexp_immutable_array _) ->
+          | Jexp_immutable_array (Iaexp_immutable_array _)
+          | Jexp_unboxed_constant _ ->
               false
         in
         Exp.maybe_extension exp exposed_extension
@@ -2154,12 +2165,13 @@ end = struct
           mark_parenzed_inner_nested_match subexp ;
         false
       in
-      let exposed_extension eexp =
+      let exposed_extension _attrs eexp =
         (* Inlined because we're nested *)
         match eexp with
-        | Extensions.Expression.Eexp_comprehension
+        | Jane_syntax.Expression.Jexp_comprehension
             (Cexp_list_comprehension _ | Cexp_array_comprehension _)
-         |Eexp_immutable_array (Iaexp_immutable_array _) ->
+        | Jexp_immutable_array (Iaexp_immutable_array _)
+        | Jexp_unboxed_constant _ ->
             false
       in
       Exp.maybe_extension exp exposed_extension
@@ -2292,22 +2304,22 @@ end = struct
     Hashtbl.find marked_parenzed_inner_nested_match exp
     |> Option.value ~default:false
     ||
-    (* We don't just do the full-scale match on [Extensions.Expression.of_ast
+    (* We don't just do the full-scale match on [Jane_syntax.Expression.of_ast
        exp] here because the following match is on [ctx, exp] and is very
        complicated. These booleans let us integrate our extended AST nodes
        into the match in the most natural possible way relative to the
        structure of the existing match. We make them lazy because we only
        want to run [of_ast] if we know that [exp] isn't actually a subterm of
        an extension expression. *)
-    let opt_eexp = lazy (Extensions.Expression.of_ast exp) in
+    let opt_eexp = lazy (Jane_syntax.Expression.of_ast exp) in
     let is_extension_comprehension =
       Lazy.map opt_eexp ~f:(function
-        | Some (Eexp_comprehension _) -> true
+        | Some (Jexp_comprehension _, _) -> true
         | _ -> false )
     in
     let is_extension_immutable_array =
       Lazy.map opt_eexp ~f:(function
-        | Some (Eexp_immutable_array _) -> true
+        | Some (Jexp_immutable_array _, _) -> true
         | _ -> false )
     in
     match (ctx, exp) with
@@ -2425,10 +2437,11 @@ end = struct
               && trailing_attrs_require_parens ctx exp
               || parenze ()
         in
-        let parenze_extension ctx_eexp =
+        let parenze_extension _attrs ctx_eexp =
           match ctx_eexp with
-          | Extensions.Expression.Eexp_comprehension _
-           |Eexp_immutable_array _ ->
+          | Jane_syntax.Expression.Jexp_comprehension _
+          | Jexp_immutable_array _
+          | Jexp_unboxed_constant _ ->
               fallthrough_case ()
         in
         Exp.maybe_extension ctx_exp parenze_extension
@@ -2502,12 +2515,12 @@ end = struct
         | Pexp_sequence (lhs, rhs) -> exp_in_sequence lhs rhs exp
         | Pexp_apply (_, args)
           when List.exists args ~f:(fun (_, e0) ->
-                   let extension ee0 =
-                     match (ee0, e0.pexp_attributes) with
-                     | ( ( Extensions.Expression.Eexp_comprehension
+                   let extension attrs ee0 =
+                     match (ee0, attrs) with
+                     | ( ( Jane_syntax.Expression.Jexp_comprehension
                              ( Cexp_list_comprehension _
                              | Cexp_array_comprehension _ )
-                         | Eexp_immutable_array (Iaexp_immutable_array _) )
+                         | Jexp_immutable_array (Iaexp_immutable_array _) )
                        , _ :: _ )
                        when e0 == exp ->
                          (* Has to be [e0] and not [ee0], as [ee0] isn't a
