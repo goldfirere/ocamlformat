@@ -165,7 +165,6 @@
  
 +type global_flag =
 +  | Global
-+  | Nonlocal
 +  | Nothing
 +
 +(* constant layouts are parsed as layout annotations, and also used
@@ -185,6 +184,13 @@
 --- parser-upstream/lexer.mll
 +++ parser-standard/lexer.mll
 @@@@
+     "done", DONE;
+     "downto", DOWNTO;
+     "else", ELSE;
+     "end", END;
+     "exception", EXCEPTION;
++    "exclave_", EXCLAVE;
+     "external", EXTERNAL;
      "false", FALSE;
      "for", FOR;
      "fun", FUN;
@@ -204,12 +210,6 @@
      "module", MODULE;
      "mutable", MUTABLE;
      "new", NEW;
-+    "nonlocal_", NONLOCAL;
-     "nonrec", NONREC;
-     "object", OBJECT;
-     "of", OF;
-     "open", OPEN;
-     "or", OR;
 @@@@
  let is_keyword name = Hashtbl.mem keyword_table name
  
@@ -459,6 +459,15 @@
 +let wrap_exp_local_if p exp =
 +  if p then wrap_exp_stack exp else exp
 +
++let exclave_ext_loc loc = mkloc "extension.exclave" loc
++
++let exclave_extension loc =
++  Exp.mk ~loc:Location.none
++    (Pexp_extension(exclave_ext_loc loc, PStr []))
++
++let mkexp_exclave ~loc ~kwd_loc exp =
++  ghexp ~loc (Pexp_apply(exclave_extension (make_loc kwd_loc), [Nolabel, exp]))
++
 +let curry_attr =
 +  Attr.mk ~loc:Location.none (mknoloc "extension.curry") (PStr [])
 +
@@ -480,33 +489,20 @@
 +let global_attr loc =
 +  Attr.mk ~loc:Location.none (global_loc loc) (PStr [])
 +
-+let nonlocal_loc loc = mkloc "extension.nonlocal" loc
-+
-+let nonlocal_attr loc =
-+  Attr.mk ~loc:Location.none (nonlocal_loc loc) (PStr [])
-+
 +let mkld_global ld loc =
 +  { ld with pld_attributes = global_attr loc :: ld.pld_attributes }
-+
-+let mkld_nonlocal ld loc =
-+  { ld with pld_attributes = nonlocal_attr loc :: ld.pld_attributes }
 +
 +let mkld_global_maybe gbl ld loc =
 +  match gbl with
 +  | Global -> mkld_global ld loc
-+  | Nonlocal -> mkld_nonlocal ld loc
 +  | Nothing -> ld
 +
 +let mkcty_global cty loc =
 +  { cty with ptyp_attributes = global_attr loc :: cty.ptyp_attributes }
 +
-+let mkcty_nonlocal cty loc =
-+  { cty with ptyp_attributes = nonlocal_attr loc :: cty.ptyp_attributes }
-+
 +let mkcty_global_maybe gbl cty loc =
 +  match gbl with
 +  | Global -> mkcty_global cty loc
-+  | Nonlocal -> mkcty_nonlocal cty loc
 +  | Nothing -> cty
 +
  (* TODO define an abstraction boundary between locations-as-pairs
@@ -612,15 +608,6 @@
 +  let loc = make_loc loc in
 +  Attr.mk ~loc (mkloc id loc) (PStr [])
 +
-+let check_layout loc id =
-+  begin
-+    match id with
-+    | ("any" | "value" | "void" | "immediate64" | "immediate") -> ()
-+    | _ -> expecting loc "layout"
-+  end;
-+  let loc = make_loc loc in
-+  Attr.mk ~loc (mkloc id loc) (PStr [])
-+
  %}
  
  /* Tokens */
@@ -639,6 +626,14 @@
  %token DONE                   "done"
  %token DOT                    "."
 @@@@
+ %token ELSE                   "else"
+ %token END                    "end"
+ %token EOF                    ""
+ %token EQUAL                  "="
+ %token EXCEPTION              "exception"
++%token EXCLAVE                "exclave_"
+ %token EXTERNAL               "external"
+ %token FALSE                  "false"
  %token <string * char option> FLOAT "42.0" (* just an example *)
  %token FOR                    "for"
  %token FUN                    "fun"
@@ -671,18 +666,6 @@
  %token LBRACKETATAT           "[@@"
  %token LBRACKETATATAT         "[@@@"
  %token MATCH                  "match"
-@@@@
- %token MINUSDOT               "-."
- %token MINUSGREATER           "->"
- %token MODULE                 "module"
- %token MUTABLE                "mutable"
- %token NEW                    "new"
-+%token NONLOCAL               "nonlocal_"
- %token NONREC                 "nonrec"
- %token OBJECT                 "object"
- %token OF                     "of"
- %token OPEN                   "open"
- %token <string> OPTLABEL      "?label:" (* just an example *)
 @@@@
  %token SEMI                   ";"
  %token SEMISEMI               ";;"
@@ -899,6 +882,8 @@
  /* END AVOID */
 +  | LOCAL seq_expr
 +     { mkexp_stack ~loc:$sloc $2 }
++  | EXCLAVE seq_expr
++     { mkexp_exclave ~loc:$sloc ~kwd_loc:($loc($1)) $2 }
  ;
  %inline expr_attrs:
    | LET MODULE ext_attributes mkrhs(module_name) module_binding_body IN seq_expr
@@ -1396,12 +1381,10 @@
 +    /* empty */                                 { Immutable, Nothing }
 +  | MUTABLE                                     { Mutable, Nothing }
 +  | GLOBAL                                      { Immutable, Global }
-+  | NONLOCAL                                    { Immutable, Nonlocal }
 +;
 +%inline global_flag:
 +          { Nothing }
 +  | GLOBAL { Global }
-+  | NONLOCAL { Nonlocal }
 +;
  virtual_flag:
      /* empty */                                 { Concrete }
@@ -1409,14 +1392,6 @@
  ;
  mutable_virtual_flags:
 @@@@
-   | FALSE { "false" }
-   | FOR { "for" }
-   | FUN { "fun" }
-   | FUNCTION { "function" }
-   | FUNCTOR { "functor" }
-+  | NONLOCAL { "nonlocal_" }
-   | IF { "if" }
-   | IN { "in" }
    | INCLUDE { "include" }
    | INHERIT { "inherit" }
    | INITIALIZER { "initializer" }
